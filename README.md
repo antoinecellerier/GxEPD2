@@ -130,6 +130,7 @@
 - Waveshare437inch4color Waveshare 4.37" 4-color e-paper display 512x368 
 - ACeP565        5.65" Waveshare 5.65" 7-color e-paper display 600x448
 - GDEP0565D90    5.65" 7-color 600x448
+- GDEH0576T81    5.76" b/w 920x680, SSD2677
 - GDEY0579T93    5.79" b/w 792x272, SSD1683
 - GDEY0579Z93    5.79" b/w/r 792x272, SSD1683
 - GDEY0579F51    5.79" 4-color 792x272, HX8717

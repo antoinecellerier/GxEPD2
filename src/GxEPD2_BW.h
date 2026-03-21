@@ -181,6 +181,9 @@
 #if __has_include("gdeq/GxEPD2_426_GDEQ0426T82.h")
 #include "gdeq/GxEPD2_426_GDEQ0426T82.h"
 #endif
+#if __has_include("gdem/GxEPD2_576_GDEH0576T81.h")
+#include "gdem/GxEPD2_576_GDEH0576T81.h"
+#endif
 #if __has_include("gdey/GxEPD2_579_GDEY0579T93.h")
 #include "gdey/GxEPD2_579_GDEY0579T93.h"
 #endif
