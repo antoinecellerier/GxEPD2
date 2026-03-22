@@ -91,12 +91,15 @@ class GxEPD2_576_GDEH0576T81 : public GxEPD2_EPD
   private:
     // ---- Previous frame buffer (for partial update interleaved encoding) ----
     bool _allocPreviousBuffer();
-    void _storeToPrevious(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm);
+    void _storeToPrevious(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm,
+                          int16_t x_part = 0, int16_t y_part = 0, int16_t w_bitmap = 0, int16_t h_bitmap = 0);
 
     // ---- Display data write methods ----
     void _writeScreenBuffer(uint8_t value);
-    void _writeImageAbsolute(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm);
-    void _writeFullScreenInterleaved(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm);
+    void _writeImageAbsolute(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm,
+                             int16_t x_part = 0, int16_t y_part = 0, int16_t w_bitmap = 0, int16_t h_bitmap = 0);
+    void _writeFullScreenInterleaved(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm,
+                                     int16_t x_part = 0, int16_t y_part = 0, int16_t w_bitmap = 0, int16_t h_bitmap = 0);
 
     // ---- Controller commands ----
     void _setPartialRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool partial_mode = false); // NOTE: does not work for sub-regions on this panel

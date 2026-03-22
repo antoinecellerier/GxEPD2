@@ -129,6 +129,29 @@ static const uint8_t interleave_2bpp[256] PROGMEM =
 #undef IL
 };
 
+// Read a byte from a bitmap, handling PROGMEM access.
+static inline uint8_t _readBitmapByte(const uint8_t bitmap[], uint32_t idx, bool pgm)
+{
+#if defined(__AVR) || defined(ESP8266) || defined(ESP32)
+  return pgm ? pgm_read_byte(&bitmap[idx]) : bitmap[idx];
+#else
+  (void)pgm;
+  return bitmap[idx];
+#endif
+}
+
+// Validate and clamp Part parameters. Returns false if the region is invalid.
+static bool _validatePartParams(int16_t& x_part, int16_t& y_part, int16_t w_bitmap, int16_t h_bitmap, int16_t& w, int16_t& h)
+{
+  if ((w_bitmap < 0) || (h_bitmap < 0) || (w < 0) || (h < 0)) return false;
+  if ((x_part < 0) || (x_part >= w_bitmap)) return false;
+  if ((y_part < 0) || (y_part >= h_bitmap)) return false;
+  x_part -= x_part % 8;
+  w = w_bitmap - x_part < w ? w_bitmap - x_part : w;
+  h = h_bitmap - y_part < h ? h_bitmap - y_part : h;
+  return true;
+}
+
 // ============================================================================
 // Constructor
 // ============================================================================
@@ -165,9 +188,13 @@ bool GxEPD2_576_GDEH0576T81::_allocPreviousBuffer()
 // byte order, without SHL=0 reversal) for constructing interleaved old+new
 // data during the next partial refresh.
 void GxEPD2_576_GDEH0576T81::_storeToPrevious(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h,
-                                               bool invert, bool mirror_y, bool pgm)
+                                               bool invert, bool mirror_y, bool pgm,
+                                               int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap)
 {
   if (!_previous_buffer) return;
+  // Source bitmap dimensions: use w_bitmap/h_bitmap if provided, else w/h
+  if (w_bitmap <= 0) { w_bitmap = w; h_bitmap = h; }
+  uint16_t wb_src = (w_bitmap + 7) / 8;
   uint16_t wb = (w + 7) / 8;
   x -= x % 8;
   w = wb * 8;
@@ -185,20 +212,9 @@ void GxEPD2_576_GDEH0576T81::_storeToPrevious(const uint8_t bitmap[], int16_t x,
   {
     for (int16_t j = 0; j < w1 / 8; j++)
     {
-      uint32_t idx = mirror_y ? j + dx / 8 + uint32_t((h - 1 - (i + dy))) * wb : j + dx / 8 + uint32_t(i + dy) * wb;
-      uint8_t data;
-      if (pgm)
-      {
-#if defined(__AVR) || defined(ESP8266) || defined(ESP32)
-        data = pgm_read_byte(&bitmap[idx]);
-#else
-        data = bitmap[idx];
-#endif
-      }
-      else
-      {
-        data = bitmap[idx];
-      }
+      uint32_t idx = mirror_y ? x_part / 8 + j + dx / 8 + uint32_t((h_bitmap - 1 - (y_part + i + dy))) * wb_src
+                              : x_part / 8 + j + dx / 8 + uint32_t(y_part + i + dy) * wb_src;
+      uint8_t data = _readBitmapByte(bitmap, idx, pgm);
       if (invert) data = ~data;
       _previous_buffer[(y1 + i) * wb_full + (x1 / 8 + j)] = data;
     }
@@ -217,7 +233,6 @@ void GxEPD2_576_GDEH0576T81::clearScreen(uint8_t value)
 
 void GxEPD2_576_GDEH0576T81::writeScreenBuffer(uint8_t value)
 {
-  if (!_init_display_done) _Init_Full();
   _writeScreenBuffer(value);
   _initial_write = false;
 }
@@ -226,7 +241,7 @@ void GxEPD2_576_GDEH0576T81::writeScreenBuffer(uint8_t value)
 // Also updates _previous_buffer to match.
 void GxEPD2_576_GDEH0576T81::_writeScreenBuffer(uint8_t value)
 {
-  if (!_init_display_done) _Init_Full();
+  if (!_init_display_done || _using_partial_mode) _Init_Full();
   // Sample code waits for busy after CMD 0x10 before writing data
   _writeCommand(0x10); // DTM1 — start data transmission
   _waitWhileBusy("_writeScreenBuffer DTM1", power_on_time);
@@ -284,7 +299,8 @@ void GxEPD2_576_GDEH0576T81::writeImageAgain(const uint8_t bitmap[], int16_t x, 
 void GxEPD2_576_GDEH0576T81::writeImagePartAgain(const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
     int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
-  // TODO: implement if needed for paged partial updates
+  if (!_validatePartParams(x_part, y_part, w_bitmap, h_bitmap, w, h)) return;
+  _storeToPrevious(bitmap, x, y, w, h, invert, mirror_y, pgm, x_part, y_part, w_bitmap, h_bitmap);
 }
 
 // ============================================================================
@@ -298,12 +314,17 @@ void GxEPD2_576_GDEH0576T81::writeImagePartAgain(const uint8_t bitmap[], int16_t
 //
 // The sample code flow is: EPD_init() -> PIC_display() -> EPD_update()
 // where PIC_display writes CMD 0x10 then all pixel data. No CMD 0x83 is used.
-void GxEPD2_576_GDEH0576T81::_writeImageAbsolute(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void GxEPD2_576_GDEH0576T81::_writeImageAbsolute(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm,
+                                                  int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap)
 {
   if (_initial_write) writeScreenBuffer(); // first-time full screen clear
   delay(1); // yield() to avoid WDT on ESP8266 and ESP32
 
-  // Clamp bitmap region to display bounds
+  // Source bitmap dimensions: use w_bitmap/h_bitmap if provided, else w/h
+  if (w_bitmap <= 0) { w_bitmap = w; h_bitmap = h; }
+  uint16_t wb_src = (w_bitmap + 7) / 8;
+
+  // Clamp target region to display bounds
   uint16_t wb = (w + 7) / 8; // width bytes, bitmaps are padded
   x -= x % 8; // byte boundary
   w = wb * 8; // byte boundary
@@ -317,7 +338,10 @@ void GxEPD2_576_GDEH0576T81::_writeImageAbsolute(const uint8_t bitmap[], int16_t
   h1 -= dy;
   if ((w1 <= 0) || (h1 <= 0)) return;
 
-  if (!_init_display_done) _Init_Full();
+  // Ensure full refresh LUT is loaded. The _using_partial_mode check handles
+  // the transition from partial to full: _init_display_done may still be true
+  // from _Init_Part(), but the LUT and mode need to switch before writing data.
+  if (!_init_display_done || _using_partial_mode) _Init_Full();
 
   // Begin full-screen data transmission
   // Note: no CMD 0x83 — sample code does not use it for full refresh
@@ -326,29 +350,22 @@ void GxEPD2_576_GDEH0576T81::_writeImageAbsolute(const uint8_t bitmap[], int16_t
   _startTransfer();
 
   uint16_t wb_full = WIDTH / 8; // 920/8 = 115 bytes per row
+  int16_t col_min = x1 / 8;
+  int16_t col_max = (x1 + w1) / 8;
   for (int16_t row = 0; row < int16_t(HEIGHT); row++)
   {
+    bool row_in_range = (row >= y1 && row < y1 + h1);
     // SHL=0 fix: write bytes in reverse order (rightmost byte first)
     for (int16_t col = wb_full - 1; col >= 0; col--)
     {
       uint8_t data;
-      if (row >= y1 && row < y1 + h1 && col >= x1 / 8 && col < (x1 + w1) / 8)
+      if (row_in_range && col >= col_min && col < col_max)
       {
         // Inside the bitmap region — read from source
-        int16_t j = col - x1 / 8;
-        uint32_t idx = mirror_y ? j + dx / 8 + uint32_t((h - 1 - (row - y1 + dy))) * wb : j + dx / 8 + uint32_t(row - y1 + dy) * wb;
-        if (pgm)
-        {
-#if defined(__AVR) || defined(ESP8266) || defined(ESP32)
-          data = pgm_read_byte(&bitmap[idx]);
-#else
-          data = bitmap[idx];
-#endif
-        }
-        else
-        {
-          data = bitmap[idx];
-        }
+        int16_t j = col - col_min;
+        uint32_t idx = mirror_y ? x_part / 8 + j + dx / 8 + uint32_t((h_bitmap - 1 - (y_part + row - y1 + dy))) * wb_src
+                                : x_part / 8 + j + dx / 8 + uint32_t(y_part + row - y1 + dy) * wb_src;
+        data = _readBitmapByte(bitmap, idx, pgm);
         if (invert) data = ~data;
       }
       else
@@ -379,12 +396,17 @@ void GxEPD2_576_GDEH0576T81::_writeImageAbsolute(const uint8_t bitmap[], int16_t
 // This matches the sample code's PIC_display_Part_ALL function which also
 // writes the full screen for every partial update — there is no sub-region
 // partial write capability on this controller.
-void GxEPD2_576_GDEH0576T81::_writeFullScreenInterleaved(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
+void GxEPD2_576_GDEH0576T81::_writeFullScreenInterleaved(const uint8_t bitmap[], int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm,
+                                                         int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap)
 {
   if (_initial_write) writeScreenBuffer(); // first-time full screen clear
   delay(1); // yield() to avoid WDT on ESP8266 and ESP32
 
-  // Clamp bitmap region to display bounds
+  // Source bitmap dimensions: use w_bitmap/h_bitmap if provided, else w/h
+  if (w_bitmap <= 0) { w_bitmap = w; h_bitmap = h; }
+  uint16_t wb_src = (w_bitmap + 7) / 8;
+
+  // Clamp target region to display bounds
   uint16_t wb = (w + 7) / 8;
   x -= x % 8;
   w = wb * 8;
@@ -405,8 +427,11 @@ void GxEPD2_576_GDEH0576T81::_writeFullScreenInterleaved(const uint8_t bitmap[],
   _startTransfer();
 
   uint16_t wb_full = WIDTH / 8;
+  int16_t col_min = x1 / 8;
+  int16_t col_max = (x1 + w1) / 8;
   for (int16_t row = 0; row < int16_t(HEIGHT); row++)
   {
+    bool row_in_range = (row >= y1 && row < y1 + h1);
     // SHL=0 fix: write bytes in reverse order
     for (int16_t col = wb_full - 1; col >= 0; col--)
     {
@@ -414,23 +439,13 @@ void GxEPD2_576_GDEH0576T81::_writeFullScreenInterleaved(const uint8_t bitmap[],
       uint8_t old_data = _previous_buffer[row * wb_full + col];
       uint8_t new_data;
 
-      if (row >= y1 && row < y1 + h1 && col >= x1 / 8 && col < (x1 + w1) / 8)
+      if (row_in_range && col >= col_min && col < col_max)
       {
         // Inside the changed region — read new data from bitmap
-        int16_t j = col - x1 / 8;
-        uint32_t idx = mirror_y ? j + dx / 8 + uint32_t((h - 1 - (row - y1 + dy))) * wb : j + dx / 8 + uint32_t(row - y1 + dy) * wb;
-        if (pgm)
-        {
-#if defined(__AVR) || defined(ESP8266) || defined(ESP32)
-          new_data = pgm_read_byte(&bitmap[idx]);
-#else
-          new_data = bitmap[idx];
-#endif
-        }
-        else
-        {
-          new_data = bitmap[idx];
-        }
+        int16_t j = col - col_min;
+        uint32_t idx = mirror_y ? x_part / 8 + j + dx / 8 + uint32_t((h_bitmap - 1 - (y_part + row - y1 + dy))) * wb_src
+                                : x_part / 8 + j + dx / 8 + uint32_t(y_part + row - y1 + dy) * wb_src;
+        new_data = _readBitmapByte(bitmap, idx, pgm);
         if (invert) new_data = ~new_data;
       }
       else
@@ -460,14 +475,22 @@ void GxEPD2_576_GDEH0576T81::_writeFullScreenInterleaved(const uint8_t bitmap[],
 void GxEPD2_576_GDEH0576T81::writeImagePart(const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
     int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
-  // CMD 0x83 sub-region writes don't work; delegate to full-screen write
-  writeImage(bitmap, x, y, w, h, invert, mirror_y, pgm);
+  if (!_validatePartParams(x_part, y_part, w_bitmap, h_bitmap, w, h)) return;
+  if (_previous_buffer)
+  {
+    _writeFullScreenInterleaved(bitmap, x, y, w, h, invert, mirror_y, pgm, x_part, y_part, w_bitmap, h_bitmap);
+  }
+  else
+  {
+    _writeImageAbsolute(bitmap, x, y, w, h, invert, mirror_y, pgm, x_part, y_part, w_bitmap, h_bitmap);
+  }
 }
 
 void GxEPD2_576_GDEH0576T81::writeImagePartToPrevious(const uint8_t bitmap[], int16_t x_part, int16_t y_part, int16_t w_bitmap, int16_t h_bitmap,
     int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
-  // TODO: implement if needed
+  if (!_validatePartParams(x_part, y_part, w_bitmap, h_bitmap, w, h)) return;
+  _storeToPrevious(bitmap, x, y, w, h, invert, mirror_y, pgm, x_part, y_part, w_bitmap, h_bitmap);
 }
 
 // ============================================================================
@@ -506,6 +529,7 @@ void GxEPD2_576_GDEH0576T81::drawImagePart(const uint8_t bitmap[], int16_t x_par
 {
   writeImagePart(bitmap, x_part, y_part, w_bitmap, h_bitmap, x, y, w, h, invert, mirror_y, pgm);
   refresh(x, y, w, h);
+  writeImagePartAgain(bitmap, x_part, y_part, w_bitmap, h_bitmap, x, y, w, h, invert, mirror_y, pgm);
 }
 
 void GxEPD2_576_GDEH0576T81::drawImage(const uint8_t* black, const uint8_t* color, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
@@ -533,7 +557,7 @@ void GxEPD2_576_GDEH0576T81::refresh(bool partial_update_mode)
   if (partial_update_mode) refresh(0, 0, WIDTH, HEIGHT);
   else
   {
-    // Full refresh — data should already be written via _Init_Full path
+    if (_using_partial_mode) _Init_Full();
     _Update_Full();
     _initial_refresh = false;
   }
@@ -541,7 +565,12 @@ void GxEPD2_576_GDEH0576T81::refresh(bool partial_update_mode)
 
 void GxEPD2_576_GDEH0576T81::refresh(int16_t x, int16_t y, int16_t w, int16_t h)
 {
-  if (_initial_refresh) return refresh(false); // first update must be full refresh
+  // Fall back to full refresh if partial update isn't possible:
+  // - _initial_refresh: first update must be full
+  // - !_previous_buffer: interleaved encoding requires previous frame data;
+  //   without it, writeImage used absolute encoding which the partial LUT
+  //   would misinterpret, producing artifacts (cells go black but never white)
+  if (_initial_refresh || !_previous_buffer) return refresh(false);
   if (!_using_partial_mode) _Init_Part();
   _Update_Part();
 }
@@ -696,9 +725,17 @@ void GxEPD2_576_GDEH0576T81::_InitDisplay()
 // bands — the full refresh LUT expects different waveform parameters.
 void GxEPD2_576_GDEH0576T81::_Init_Full()
 {
+  // Power off first when switching from partial mode. The sample code always
+  // starts from a power-off state (via EPD_sleep before EPD_init). Without
+  // this, the LUT switch produces noise bands in the top/middle rows.
+  if (_using_partial_mode) _PowerOff();
   _InitDisplay();
 
-  // Read temperature from controller's internal sensor (CMD 0x40)
+  // Read temperature from controller's internal sensor (CMD 0x40).
+  // Note: _readData() only works with software SPI (bit-banged GPIO).
+  // With hardware SPI (the default), it returns 0, which maps to the
+  // coldest LUT compensation (0xE8). This is a safe default — the display
+  // works correctly, with slightly non-optimal waveforms at room temperature.
   _writeCommand(0x40);
   _waitWhileBusy("_Init_Full ReadTemp", power_on_time);
   uint8_t temp = _readData();
