@@ -17,6 +17,7 @@ GxEPD2_576_GDEH0576T81::GxEPD2_576_GDEH0576T81(int16_t cs, int16_t dc, int16_t r
   GxEPD2_EPD(cs, dc, rst, busy, LOW, 25000000, WIDTH, HEIGHT, panel, hasColor, hasPartialUpdate, hasFastPartialUpdate)
 {
   _using_differential_refresh = false;
+  _external_temperature = _no_temperature;
 }
 
 void GxEPD2_576_GDEH0576T81::clearScreen(uint8_t value)
@@ -549,13 +550,25 @@ void GxEPD2_576_GDEH0576T81::_use_differential_refresh(bool yes)
   }
 }
 
+void GxEPD2_576_GDEH0576T81::setTemperature(int8_t celsius)
+{
+  _external_temperature = celsius;
+}
+
+void GxEPD2_576_GDEH0576T81::clearTemperature()
+{
+  _external_temperature = _no_temperature;
+}
+
 uint8_t GxEPD2_576_GDEH0576T81::_get_lut_temperature()
 {
   _writeCommand(0x40); // read temperature
   delay(5);
-  uint8_t temp = _readData();
+  int16_t temp = _readData();
   //Serial.print("temperature measured for LUT selection: "); Serial.println(temp);
-  if (temp == 0) return 241; // didn't get one, use value for 20..30
+  // the read and its delay are kept even when unused: the panel needs them here
+  if (_external_temperature != _no_temperature) temp = _external_temperature;
+  else if (temp == 0) return 241; // didn't get one, use value for 20..30
   if (temp <= 5) return 232;
   if (temp <= 10) return 235;
   if (temp <= 20) return 238;

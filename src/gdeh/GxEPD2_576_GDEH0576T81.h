@@ -65,6 +65,10 @@ class GxEPD2_576_GDEH0576T81 : public GxEPD2_EPD
     void refresh(int16_t x, int16_t y, int16_t w, int16_t h); // screen refresh from controller memory, partial screen
     void powerOff(); // turns off generation of panel driving voltages, avoids screen fading over time
     void hibernate(); // turns powerOff() and sets controller to deep sleep for minimum power use, ONLY if wakeable by RST (rst >= 0)
+    // use this temperature for LUT selection instead of reading it from the
+    // controller, which needs SW SPI (see _get_lut_temperature)
+    void setTemperature(int8_t celsius);
+    void clearTemperature();
   private:
     void _refresh();
     void _setPartialRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool partial_mode = true);
@@ -77,6 +81,8 @@ class GxEPD2_576_GDEH0576T81 : public GxEPD2_EPD
   private:
     bool _using_differential_refresh;
     uint8_t _lut_temperature; // value for LUT selection
+    static const int16_t _no_temperature = INT16_MIN;
+    int16_t _external_temperature;
 };
 
 #endif
